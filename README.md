@@ -1,5 +1,5 @@
-# TMDB MongoDB Fetcher
-TMDB MongoDB Fetcher is a project to fetch all the movies and series from the famous website **"TMDB"** and store it to a MongoDB Database for further uses.
+# TMDB IGDB MongoDB Fetcher
+TMDB IGDB MongoDB Fetcher is a project which fetch all the movies and series from the famous website **"TMDB"**, all the games from **IGDB** and store it to a MongoDB Database for further uses.
 
 ## How it works 
 That project works as follow : getting public movies id ; which anyone can download, clean them, ask the TMDB and IGDB API for getting more details (useful ones), download every poster of movies / series / games if that's what you want and put all of theses data in a MongoDB database.
@@ -14,7 +14,7 @@ pip install -r requirements.txt
 And then you can run the project, **HOWEVER** you need to create a .env file with these variables : 
 ```python
 TMDB_API_KEY = "[your TMDB api key]"
-LOCAL_MONGO_URI = "mongodb://localhost:27017/"
+MONGO_URI = "mongodb://mongo:27017/"
 DB_NAME = "msg_db"
 IMAGES_DIR = "images"
 TWITCH_ID = "[your TWITCH_ID]"

@@ -1,4 +1,4 @@
-pymongo==4.0.2  # MongoDB driver
-requests==2.26.0  # HTTP library
+pymongo>=4.0.2  # MongoDB driver (version managed by Airflow constraints)
+requests>=2.26.0  # HTTP library (version managed by Airflow constraints)
 glob2==0.7  
 python-dotenv
