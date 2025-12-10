@@ -21,7 +21,6 @@ dag = DAG(
     'sync_igdb_games',
     default_args=default_args,
     description='Synch games from IGDB to a local MongoDB',
-    schedule_interval=timedelta(days=1),  # Exécution quotidienne
     start_date=datetime(2025, 1, 1),
     catchup=False,
     tags=['igdb', 'games', 'mongodb'],

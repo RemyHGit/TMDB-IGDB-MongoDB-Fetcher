@@ -10,7 +10,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'plugins'))
 from games_mongodb_script import sync_all_games_threaded
 from movies_mongodb_script import sync_movies_file_add_db_threaded
 from series_mongodb_script import sync_series_file_add_db_threaded
-from books_mongodb_script import sync_books_threaded
 
 default_args = {
     'owner': 'airflow',
@@ -24,7 +23,7 @@ default_args = {
 dag = DAG(
     'sync_all_sources',
     default_args=default_args,
-    description='Synchronise tous les contenus (jeux, films, séries, livres) vers MongoDB',
+    description='Synchronise tous les contenus (jeux, films, séries) vers MongoDB',
     schedule_interval=timedelta(days=1),  # Exécution quotidienne
     start_date=datetime(2025, 1, 1),
     catchup=False,
@@ -42,10 +41,6 @@ def sync_movies_task(**context):
 def sync_series_task(**context):
     """Tâche pour synchroniser les séries TMDB"""
     sync_series_file_add_db_threaded(parts=10, only_new=True)
-
-def sync_books_task(**context):
-    """Tâche pour synchroniser les livres Google Books"""
-    sync_books_threaded(parts=10, max_books_per_query=500)
 
 # Création des tâches
 sync_games = PythonOperator(
@@ -66,13 +61,7 @@ sync_series = PythonOperator(
     dag=dag,
 )
 
-sync_books = PythonOperator(
-    task_id='sync_google_books',
-    python_callable=sync_books_task,
-    dag=dag,
-)
-
 # Les tâches s'exécutent en parallèle (pas de dépendances)
 # Si tu veux qu'elles s'exécutent séquentiellement, décommente les lignes suivantes:
-# sync_games >> sync_movies >> sync_series >> sync_books
+# sync_games >> sync_movies >> sync_series
 

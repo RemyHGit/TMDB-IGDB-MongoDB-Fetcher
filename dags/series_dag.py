@@ -22,7 +22,6 @@ dag = DAG(
     'sync_tmdb_series',
     default_args=default_args,
     description='Synchronise les séries depuis TMDB vers MongoDB',
-    schedule_interval=timedelta(days=1),  # Exécution quotidienne
     start_date=datetime(2025, 1, 1),
     catchup=False,
     tags=['tmdb', 'series', 'mongodb'],

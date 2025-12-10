@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
+import threading
 
 # boot
 sys.stdout.reconfigure(encoding="utf-8")
@@ -30,12 +31,14 @@ COLLECTION = "tmdb_series"
 
 # mongo
 def fetch_db_collection():
+    """Fetches and returns the MongoDB collection for series, creating index if needed"""
     mongo = MongoClient(MONGO_URI)
     collection = mongo[DB_NAME][COLLECTION]
     collection.create_index([("id", ASCENDING)], unique=True)
     return collection
 
 def fetch_db_series():
+    """Fetches all series from MongoDB collection"""
     c = fetch_db_collection()
     return c.find()
 
@@ -48,6 +51,7 @@ def fetch_series_from_mongodb():
 
 # files
 def fetch_most_recent_file():
+    """Returns the path to the most recent series IDs file (fN.json)"""
     if not os.path.exists("app/series_files"):
         os.makedirs("app/series_files")
 
@@ -61,6 +65,7 @@ def fetch_most_recent_file():
     return files[-1]
 
 def fetch_most_recent_file_name():
+    """Returns the name (without extension) of the most recent series IDs file"""
     if not os.path.exists("app/series_files"):
         os.makedirs("app/series_files")
 
@@ -75,6 +80,7 @@ def fetch_most_recent_file_name():
     return os.path.splitext(os.path.basename(files[-1]))[0]
 
 def fetch_tmdb_series_length():
+    """Returns the number of lines in the most recent series IDs file"""
     path = fetch_most_recent_file()
     if not path:
         return 0
@@ -83,6 +89,7 @@ def fetch_tmdb_series_length():
 
 # partitions
 def partitions(total: int, parts: int):
+    """Divides a total into multiple partitions for parallel processing"""
     size = math.ceil(total / parts)
     out = []
     for i in range(parts):
@@ -94,6 +101,7 @@ def partitions(total: int, parts: int):
 
 # api
 def fetch_serie_details(serie_id: int):
+    """Fetches complete series details from TMDB API by series ID"""
     url = f"https://api.themoviedb.org/3/tv/{serie_id}?api_key={TMDB_API_KEY}"
     response = requests.get(url, headers=headers)
     if response.status_code == 200:
@@ -106,6 +114,7 @@ def fetch_serie_details(serie_id: int):
         return None
 
 def fetch_all_titles(serie_id: int):
+    """Fetches all alternative titles for a series from TMDB API"""
     url = f"https://api.themoviedb.org/3/tv/{serie_id}/alternative_titles?api_key={TMDB_API_KEY}"
     response = requests.get(url, headers=headers)
     if response.status_code == 200:
@@ -117,7 +126,31 @@ def fetch_all_titles(serie_id: int):
         return None
 
 # helpers
+def is_anime(details):
+    """Detects if a series/movie is an anime based on genre and origin country"""
+    genres = details.get("genres", [])
+    origin_country = details.get("origin_country", [])
+    production_countries = details.get("production_countries", [])
+    
+    # Check for Animation genre (ID 16 in TMDB)
+    has_animation = any(genre.get("id") == 16 for genre in genres if isinstance(genre, dict))
+    
+    # Check for Japan as origin/production country
+    is_japanese = False
+    if isinstance(origin_country, list):
+        is_japanese = "JP" in origin_country
+    if not is_japanese and isinstance(production_countries, list):
+        is_japanese = any(
+            country.get("iso_3166_1") == "JP" 
+            for country in production_countries 
+            if isinstance(country, dict)
+        )
+    
+    # Consider it anime if it has Animation genre AND is from Japan
+    return has_animation and is_japanese
+
 def fetch_last_known_serie_id():
+    """Returns the highest series ID currently in the database"""
     c = fetch_db_collection()
     last_serie = c.find_one(sort=[("id", -1)])
     if last_serie:
@@ -127,6 +160,7 @@ def fetch_last_known_serie_id():
 
 # download
 def dl_recent_series_ids():
+    """Downloads the most recent TMDB series IDs export files (regular and adult)"""
     now = datetime.now()
 
     file_name = now.strftime("tv_series_ids_%m_%d_%Y.json.gz")
@@ -198,11 +232,12 @@ def dl_recent_series_ids():
 
 # images
 def fetch_serie_image(serie_id, path):
+    """Downloads a series poster image from TMDB and saves it locally"""
     url = f"https://image.tmdb.org/t/p/w500/{path}"
     response = requests.get(url, stream=True)
     if response.status_code == 200:
-        os.makedirs("app/series_img", exist_ok=True)
-        image_path = os.path.join("app/series_img", f"{serie_id}.jpg")
+        os.makedirs("images/series", exist_ok=True)
+        image_path = os.path.join("images/series", f"{serie_id}.jpg")
         with open(image_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=128):
                 f.write(chunk)
@@ -211,6 +246,7 @@ def fetch_serie_image(serie_id, path):
         return None
 
 def dl_serie_images():
+    """Downloads poster images for all series in the database"""
     series = fetch_db_series()
     c = fetch_db_collection()
     for s in series:
@@ -228,6 +264,7 @@ def dl_serie_images():
 
 # doc
 def serie_doc(l_s, details):
+    """Creates a structured MongoDB document from TMDB series data"""
     return {
         "id": l_s["id"],
         "original_name": l_s["original_name"],
@@ -259,6 +296,7 @@ def serie_doc(l_s, details):
         "backdrop_path": details.get("backdrop_path"),
         "origin_country": details.get("origin_country"),
         "original_language": details.get("original_language"),
+        "is_anime": is_anime(details),
     }
 
 # sync
@@ -298,9 +336,17 @@ def sync_series_file_add_db_threaded(parts: int = 4, only_new: bool = True):
     ranges = partitions(file_len, parts)
     print(f"[INFO] Using {len(ranges)} partitions for TMDB series file of {file_len} lines")
 
+    # Event to signal threads to stop
+    stop_event = threading.Event()
+
     def worker(start: int, end: int, part: int) -> int:
         upserted_count = 0
         for idx in range(start, end):
+            # Check if we should stop
+            if stop_event.is_set():
+                print(f"[Part {part}] Stopping worker due to cancellation signal")
+                break
+            
             line = file_lines[idx]
             try:
                 l_s = json.loads(line)
@@ -312,9 +358,11 @@ def sync_series_file_add_db_threaded(parts: int = 4, only_new: bool = True):
             if not isinstance(sid, int):
                 continue
 
-            # optional skip of old ids
-            if only_new and last_id is not None and sid <= last_id:
-                continue
+            # Skip only if document already exists in DB (when only_new=True)
+            if only_new:
+                existing = c.find_one({"id": sid})
+                if existing:
+                    continue
 
             details = fetch_serie_details(sid)
             if details and isinstance(details.get("id"), int):
@@ -335,18 +383,33 @@ def sync_series_file_add_db_threaded(parts: int = 4, only_new: bool = True):
 
         return upserted_count
 
-    total_upserted = 0
-    with ThreadPoolExecutor(max_workers=parts) as pool:
-        futures = {
-            pool.submit(worker, s, e, p): (s, e, p) for (s, e, p) in ranges
-        }
-        for fut in as_completed(futures):
-            s, e, p = futures[fut]
-            upserted = fut.result()
-            total_upserted += upserted
-            print(f"[DONE] Part {p} ({s}-{e}) upserted {upserted} series.")
+    try:
+        total_upserted = 0
+        futures = {}
+        with ThreadPoolExecutor(max_workers=parts) as pool:
+            futures = {
+                pool.submit(worker, s, e, p): (s, e, p) for (s, e, p) in ranges
+            }
+            for fut in as_completed(futures):
+                s, e, p = futures[fut]
+                try:
+                    upserted = fut.result()
+                    total_upserted += upserted
+                    print(f"[DONE] Part {p} ({s}-{e}) upserted {upserted} series.")
+                except Exception as e:
+                    print(f"[ERROR] Part {p} ({s}-{e}) failed: {e}")
+                    stop_event.set()  # Signal other threads to stop
+                    raise
 
-    print(f"[DONE] Total series upserted this run: {total_upserted}")
+        print(f"[DONE] Total series upserted this run: {total_upserted}")
+    except (KeyboardInterrupt, SystemExit):
+        print("[INFO] Task cancelled, stopping all workers...")
+        stop_event.set()
+        # Cancel remaining futures
+        if 'futures' in locals():
+            for fut in futures:
+                fut.cancel()
+        raise
 
 # main
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
+import threading
 
 # boot
 sys.stdout.reconfigure(encoding="utf-8")
@@ -30,17 +31,20 @@ headers = {"accept": "application/json", "Authorization": f"Bearer {TMDB_API_KEY
 
 # mongo
 def fetch_db_collection():
+    """Fetches and returns the MongoDB collection for movies, creating index if needed"""
     mongo = MongoClient(MONGO_URI)
     collection = mongo[DB_NAME][COLLECTION]
     collection.create_index([("id", ASCENDING)], unique=True)
     return collection
 
 def fetch_db_movies():
+    """Fetches all movies from MongoDB collection"""
     c = fetch_db_collection()
     return c.find()
 
 # files
 def fetch_most_recent_file():
+    """Returns the path to the most recent movie IDs file (fN.json)"""
     if not os.path.exists("app/movies_files"):
         os.makedirs("app/movies_files")
     
@@ -54,6 +58,7 @@ def fetch_most_recent_file():
     return files[-1]
 
 def fetch_most_recent_file_name():
+    """Returns the name (without extension) of the most recent movie IDs file"""
     if not os.path.exists("app/movies_files"):
         os.makedirs("app/movies_files")
     
@@ -66,6 +71,7 @@ def fetch_most_recent_file_name():
     return os.path.splitext(os.path.basename(files[-1]))[0]
 
 def fetch_tmdb_movies_length():
+    """Returns the number of lines in the most recent movie IDs file"""
     path = fetch_most_recent_file()
     if not path:
         return 0
@@ -74,6 +80,7 @@ def fetch_tmdb_movies_length():
 
 # partitions
 def partitions(total: int, parts: int):
+    """Divides a total into multiple partitions for parallel processing"""
     size = math.ceil(total / parts)
     out = []
     for i in range(parts):
@@ -85,6 +92,7 @@ def partitions(total: int, parts: int):
 
 # api
 def fetch_movie_details(movie_id: int):
+    """Fetches complete movie details from TMDB API by movie ID"""
     url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_API_KEY}"
     response = requests.get(url, headers=headers)
     data = response.json()
@@ -96,6 +104,7 @@ def fetch_movie_details(movie_id: int):
         return None
 
 def fetch_all_titles(movie_id: int):
+    """Fetches all alternative titles for a movie from TMDB API"""
     url = f"https://api.themoviedb.org/3/movie/{movie_id}/alternative_titles?api_key={TMDB_API_KEY}"
     response = requests.get(url, headers=headers)
 
@@ -108,6 +117,7 @@ def fetch_all_titles(movie_id: int):
         return None
 
 def fetch_movies_from_mongodb():
+    """Fetches all movies from MongoDB and returns them as a list"""
     client = MongoClient(MONGO_URI)    
     db = client[DB_NAME]
     collection = db["movies"]
@@ -118,7 +128,31 @@ def fetch_movies_from_mongodb():
     return movies_data
 
 # helpers
+def is_anime(details):
+    """Detects if a series/movie is an anime based on genre and origin country"""
+    genres = details.get("genres", [])
+    origin_country = details.get("origin_country", [])
+    production_countries = details.get("production_countries", [])
+    
+    # Check for Animation genre (ID 16 in TMDB)
+    has_animation = any(genre.get("id") == 16 for genre in genres if isinstance(genre, dict))
+    
+    # Check for Japan as origin/production country
+    is_japanese = False
+    if isinstance(origin_country, list):
+        is_japanese = "JP" in origin_country
+    if not is_japanese and isinstance(production_countries, list):
+        is_japanese = any(
+            country.get("iso_3166_1") == "JP" 
+            for country in production_countries 
+            if isinstance(country, dict)
+        )
+    
+    # Consider it anime if it has Animation genre AND is from Japan
+    return has_animation and is_japanese
+
 def fetch_last_known_movie_id():
+    """Returns the highest movie ID currently in the database"""
     c = fetch_db_collection()
     last_movie = c.find_one(sort=[("id", -1)])
     if last_movie:
@@ -128,6 +162,7 @@ def fetch_last_known_movie_id():
 
 # download
 def dl_recent_movie_ids():
+    """Downloads the most recent TMDB movie IDs export files (regular and adult)"""
     now = datetime.now()
 
     file_name = now.strftime("movie_ids_%m_%d_%Y.json.gz")
@@ -192,6 +227,7 @@ def dl_recent_movie_ids():
         print("File downloaded and extracted successfully.")
 
 def check_movie_attributes(movie_details, db_movie_details):
+    """Checks if movie attributes have changed between API data and database data"""
     attributes_to_check = [
         "id",
         "original_title",
@@ -223,10 +259,12 @@ def check_movie_attributes(movie_details, db_movie_details):
 
 # images
 def fetch_movie_image(movie_id, path):
+    """Downloads a movie poster image from TMDB and saves it locally"""
     url = f"https://image.tmdb.org/t/p/w500/{path}"
     response = requests.get(url, stream=True)
     if response.status_code == 200:
-        image_path = os.path.join(IMAGES_DIR, f"{movie_id}.jpg")
+        os.makedirs("images/movies", exist_ok=True)
+        image_path = os.path.join("images/movies", f"{movie_id}.jpg")
         with open(image_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=128):
                 f.write(chunk)
@@ -235,6 +273,7 @@ def fetch_movie_image(movie_id, path):
         return None
 
 def dl_movie_images():
+    """Downloads poster images for all movies in the database"""
     movies = fetch_db_movies()
     for m in movies:
         if m["poster_path"]:
@@ -249,6 +288,7 @@ def dl_movie_images():
 
 # doc
 def movie_doc(l_m, details):
+    """Creates a structured MongoDB document from TMDB movie data"""
     return {
         "id": l_m["id"],
         "original_title": l_m["original_title"],
@@ -269,6 +309,7 @@ def movie_doc(l_m, details):
         "budget": details["budget"] if details.get("budget") is not None else None,
         "origin_country": details["origin_country"] if details.get("origin_country") is not None else None,
         "original_language": details["original_language"] if details.get("original_language") is not None else None,
+        "is_anime": is_anime(details),
     }
 
 # sync
@@ -304,9 +345,17 @@ def sync_movies_file_add_db_threaded(parts: int = 4, only_new: bool = True):
     ranges = partitions(file_len, parts)
     print(f"[INFO] Using {len(ranges)} partitions for TMDB movies file of {file_len} lines")
 
+    # Event to signal threads to stop
+    stop_event = threading.Event()
+
     def worker(start: int, end: int, part: int) -> int:
         upserted = 0
         for idx in range(start, end):
+            # Check if we should stop
+            if stop_event.is_set():
+                print(f"[Part {part}] Stopping worker due to cancellation signal")
+                break
+            
             line = file_lines[idx]
             try:
                 l_m = json.loads(line)
@@ -318,8 +367,11 @@ def sync_movies_file_add_db_threaded(parts: int = 4, only_new: bool = True):
             if not isinstance(mid, int):
                 continue
 
-            if only_new and last_id is not None and mid <= last_id:
-                continue
+            # Skip only if document already exists in DB (when only_new=True)
+            if only_new:
+                existing = c.find_one({"id": mid})
+                if existing:
+                    continue
 
             details = fetch_movie_details(mid)
             if details and isinstance(details.get("id"), int):
@@ -338,19 +390,34 @@ def sync_movies_file_add_db_threaded(parts: int = 4, only_new: bool = True):
                     )
         return upserted
 
-    total_upserted = 0
-    with ThreadPoolExecutor(max_workers=parts) as pool:
-        futures = {
-            pool.submit(worker, s, e, p): (s, e, p)
-            for (s, e, p) in ranges
-        }
-        for fut in as_completed(futures):
-            s, e, p = futures[fut]
-            upserted = fut.result()
-            total_upserted += upserted
-            print(f"[DONE] Part {p} ({s}-{e}) upserted {upserted} movies.")
+    try:
+        total_upserted = 0
+        futures = {}
+        with ThreadPoolExecutor(max_workers=parts) as pool:
+            futures = {
+                pool.submit(worker, s, e, p): (s, e, p)
+                for (s, e, p) in ranges
+            }
+            for fut in as_completed(futures):
+                s, e, p = futures[fut]
+                try:
+                    upserted = fut.result()
+                    total_upserted += upserted
+                    print(f"[DONE] Part {p} ({s}-{e}) upserted {upserted} movies.")
+                except Exception as e:
+                    print(f"[ERROR] Part {p} ({s}-{e}) failed: {e}")
+                    stop_event.set()  # Signal other threads to stop
+                    raise
 
-    print(f"[DONE] Total movies upserted this run: {total_upserted}")
+        print(f"[DONE] Total movies upserted this run: {total_upserted}")
+    except (KeyboardInterrupt, SystemExit):
+        print("[INFO] Task cancelled, stopping all workers...")
+        stop_event.set()
+        # Cancel remaining futures
+        if 'futures' in locals():
+            for fut in futures:
+                fut.cancel()
+        raise
 
 # main
 if __name__ == "__main__":

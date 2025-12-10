@@ -8,4 +8,4 @@ venv/
 .DS_Store
 app/
 *.csv
-logs/
+/logs

@@ -21,7 +21,6 @@ dag = DAG(
     'sync_tmdb_movies',
     default_args=default_args,
     description='Synch movies from TMDB to a local MongoDB',
-    schedule_interval=timedelta(days=1),
     start_date=datetime(2025, 1, 1),
     catchup=False,
     tags=['tmdb', 'movies', 'mongodb'],
